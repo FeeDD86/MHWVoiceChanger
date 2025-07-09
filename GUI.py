@@ -3,6 +3,8 @@ from tkinter import *
 import os
 import Query
 import MainGUIVer
+import RealTimeVoice
+import ModelManager
 
 # import the library
 from appJar import gui
@@ -18,6 +20,10 @@ validOutputVoice = True
 canConvert = True
 
 manualMode = False
+
+rt_converter = RealTimeVoice.RealTimeVoiceConverter()
+model_manager = ModelManager.ModelManager()
+rt_validOutputVoice = True
 
 #METHOD: convertCheck
 #	Checks the conditions if conversion is possible
@@ -224,17 +230,17 @@ def loadFile():
 	#Open a file dialog for the user to pick a file
 	root = Tk()
 	root.withdraw()
-	root.filename =  filedialog.askopenfilename(initialdir = "./",title = "Select file",filetypes = (("nbnk files","*.nbnk"),("all files","*.*")))
+	filename = filedialog.askopenfilename(initialdir = "./",title = "Select file",filetypes = (("nbnk files","*.nbnk"),("all files","*.*")))
 	
 	#IF: an input file was given, continue
-	if (root.filename != ""):
+	if (filename != ""):
 	
 		#Show the input file path at the top
-		app.setEntry("Input File Path:", root.filename)
+		app.setEntry("Input File Path:", filename)
 		
 		#Parse the input file path for the file and its extension
-		lastSlash = root.filename.rfind("/")
-		nbnkName = root.filename[lastSlash+1:]
+		lastSlash = filename.rfind("/")
+		nbnkName = filename[lastSlash+1:]
 		app.setEntry("Input File Name", nbnkName)
 		
 		#IF: the input file is an .nbnk file, continue
@@ -271,10 +277,10 @@ def convert(btn):
 		else:
 			root = Tk()
 			root.withdraw()
-			root.filename =  filedialog.asksaveasfilename(initialdir = "./",initialfile = (app.getLabel("OutputFileOverview")),title = "Save file",filetypes = (("nbnk files","*.nbnk"),("all files","*.*")))
+			filename = filedialog.asksaveasfilename(initialdir = "./",initialfile = (app.getLabel("OutputFileOverview")),title = "Save file",filetypes = (("nbnk files","*.nbnk"),("all files","*.*")))
 			#IF: an input file was given, continue
-			if(root.filename != ""):
-				outputPath = root.filename
+			if(filename != ""):
+				outputPath = filename
 				readyToConvert = True
 	
 		#IF: it's ready to convert, continue
@@ -331,11 +337,117 @@ def manualModeChanged():
 	validateInputFile()	
 	convertCheck()
 
+def get_audio_devices():
+	try:
+		return rt_converter.get_audio_devices()
+	except:
+		return ["Default Input", "Default Output"]
+
+def updateRTOutputOverview():
+	global rt_validOutputVoice
+	
+	updateFileGender = app.getRadioButton("RTOutGender")
+	updateFileNumber = app.getOptionBox("RTOutVoice")
+	
+	updateFileGender = updateFileGender.upper()		
+	updateFileID = updateFileGender + "_" + updateFileNumber
+	fileIDQuery = (updateFileID,)
+	updateInfo = Query.identifyFileID(fileIDQuery)
+	
+	rt_validOutputVoice = (updateInfo[4] == 1)
+	
+	app.setLabel("RTOutputNameOverview", updateInfo[1] + " Voice " + str(updateInfo[2]))
+	app.setLabel("RTOutputFileOverview", updateInfo[3])
+	
+	if rt_validOutputVoice:
+		app.setLabelFg("RTOutputNameOverview", "black")
+		app.setLabelFg("RTOutputFileOverview", "black")
+		app.setStatusbar("Updated real-time output voice information", field=0)
+		
+		if model_manager.is_model_available(updateFileID):
+			app.setLabel("RTModelStatus", "Model: Available")
+			app.setLabelFg("RTModelStatus", "green")
+		else:
+			app.setLabel("RTModelStatus", "Model: Missing")
+			app.setLabelFg("RTModelStatus", "orange")
+	else:
+		app.setLabelFg("RTOutputNameOverview", "red")
+		app.setLabelFg("RTOutputFileOverview", "red")
+		app.setLabel("RTModelStatus", "Model: Unsupported")
+		app.setLabelFg("RTModelStatus", "red")
+		app.setStatusbar("Updated real-time output voice information. WARNING: Unsupported voice selected", field=0)
+
+def start_realtime_conversion():
+	try:
+		if rt_converter.is_conversion_running():
+			app.errorBox("Error", "Real-time conversion is already running!")
+			return
+			
+		if not rt_validOutputVoice:
+			app.errorBox("Error", "Selected output voice is not supported for real-time conversion")
+			return
+		
+		input_voice_id = "FEMALE_1"
+		output_voice_id = str.upper(app.getRadioButton("RTOutGender")) + "_" + app.getOptionBox("RTOutVoice")
+		
+		input_device_str = app.getOptionBox("InputDevice")
+		output_device_str = app.getOptionBox("OutputDevice")
+		
+		input_device_idx = None
+		output_device_idx = None
+		
+		try:
+			if "Input" in input_device_str:
+				input_device_idx = int(input_device_str.split()[1].rstrip(':'))
+			if "Output" in output_device_str:
+				output_device_idx = int(output_device_str.split()[1].rstrip(':'))
+		except:
+			pass
+		
+		if rt_converter.start_conversion(input_voice_id, output_voice_id, input_device_idx, output_device_idx):
+			app.setLabel("RT_Status", "Real-time Conversion: Running")
+			app.setLabelFg("RT_Status", "green")
+			app.enableButton("Stop Real-time")
+			app.disableButton("Start Real-time")
+			app.setStatusbar("Real-time voice conversion started", field=0)
+		else:
+			app.errorBox("Error", "Failed to start real-time conversion. Check console for details.")
+			
+	except Exception as e:
+		app.errorBox("Error", f"Failed to start real-time conversion: {str(e)}")
+
+def stop_realtime_conversion():
+	try:
+		if rt_converter.stop_conversion():
+			app.setLabel("RT_Status", "Real-time Conversion: Stopped")
+			app.setLabelFg("RT_Status", "black")
+			app.enableButton("Start Real-time")
+			app.disableButton("Stop Real-time")
+			app.setStatusbar("Real-time voice conversion stopped", field=0)
+		else:
+			app.errorBox("Error", "Failed to stop real-time conversion")
+	except Exception as e:
+		app.errorBox("Error", f"Failed to stop real-time conversion: {str(e)}")
+
+def setup_models():
+	try:
+		if model_manager.setup_default_models():
+			app.infoBox("Model Setup", "Created placeholder models for supported voices.\nReplace placeholder files in 'models/' directory with actual RVC model files.")
+			updateRTOutputOverview()
+		else:
+			app.errorBox("Error", "Failed to setup models")
+	except Exception as e:
+		app.errorBox("Error", f"Failed to setup models: {str(e)}")
+
 # GUI SECTION
 
 app.setResizable(canResize=False)
 app.setBg("white", override=True)
 app.setLabelFont(weight="bold")
+
+app.startTabbedFrame("MainTabs", row=0, column=0, colspan=2)
+
+app.startTab("File Conversion")
 
 # Top Row - Input File Path
 # Shows the path to the input file
@@ -477,8 +589,49 @@ app.disableButton("CONVERT")
 app.stopFrame()
 #Bottom Right Section
 
+app.stopTab()
 
+app.startTab("Real-time Conversion")
+app.setFont(12)
 
+app.addLabel("RT_Status", "Real-time Conversion: Stopped", 0, 0, colspan=3)
+app.addButton("Start Real-time", start_realtime_conversion, 1, 0)
+app.addButton("Stop Real-time", stop_realtime_conversion, 1, 1)
+app.addButton("Setup Models", setup_models, 1, 2)
+app.disableButton("Stop Real-time")
+
+app.addLabel("Input Device Label", "Microphone:", 2, 0)
+app.addOptionBox("InputDevice", get_audio_devices(), 2, 1, colspan=2)
+
+app.addLabel("Output Device Label", "Speakers:", 3, 0)  
+app.addOptionBox("OutputDevice", get_audio_devices(), 3, 1, colspan=2)
+
+app.startLabelFrame("Real-time Voice Selection", row=4, column=0, colspan=3)
+
+app.addLabel("RT_Output_Gender", "Convert To Gender:", 0, 0)
+app.addRadioButton("RTOutGender", "Female", 0, 1)
+app.addRadioButton("RTOutGender", "Male", 0, 2)
+app.setRadioButtonChangeFunction("RTOutGender", updateRTOutputOverview)
+
+app.addLabel("RT_Output_Number", "Voice Number:", 1, 0)
+rtVoiceList = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"]
+app.addOptionBox("RTOutVoice", rtVoiceList, 1, 1)
+app.setOptionBoxChangeFunction("RTOutVoice", updateRTOutputOverview)
+
+app.stopLabelFrame()
+
+app.startLabelFrame("Real-time Preview", row=5, column=0, colspan=3)
+
+app.addLabel("RTOutputNameOverview", "Female Voice 1", 0, 0)
+app.addLabel("RTOutputFileOverview", "pl_act_vo_f_11_m.nbnk", 1, 0)
+app.addLabel("RTModelStatus", "Model: Unknown", 2, 0)
+
+app.stopLabelFrame()
+
+app.addLabel("RT_Instructions", "Instructions:\n1. Select audio devices\n2. Choose target voice\n3. Setup models if needed\n4. Click 'Start Real-time' to begin conversion", 6, 0, colspan=3)
+
+app.stopTab()
+app.stopTabbedFrame()
 
 #Bottom Row - Status Bar
 #	Provides various information and warnings
@@ -491,8 +644,7 @@ else:
 	app.setStatusbar("WARNING: Couldn't find Wwiseutil.exe! It should be in the same directory as this program", field=0)
 #Bottom Row
 
-
-
+updateRTOutputOverview()
 
 # start the GUI
 app.go()
